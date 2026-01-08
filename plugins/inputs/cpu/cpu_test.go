@@ -284,6 +284,7 @@ func TestCPUPercentagesAreClamped(t *testing.T) {
 	var mps1 psutil.MockPS
 	mps1.On("CPUTimes").Return([]cpu.TimesStat{cts}, nil)
 	cs := newCPUStats(&mps1)
+	cs.ClampPercent = true
 
 	require.NoError(t, cs.Gather(&acc))
 
@@ -321,6 +322,7 @@ func TestCPUUserGuestAdjustmentDoesNotGoNegative(t *testing.T) {
 	var mps1 psutil.MockPS
 	mps1.On("CPUTimes").Return([]cpu.TimesStat{cts}, nil)
 	cs := newCPUStats(&mps1)
+	cs.ClampPercent = true
 	require.NoError(t, cs.Gather(&acc))
 
 	var mps2 psutil.MockPS

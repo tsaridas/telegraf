@@ -30,11 +30,12 @@ type CPU struct {
 	CollectCPUTime bool `toml:"collect_cpu_time"`
 	ReportActive   bool `toml:"report_active"`
 	CoreTags       bool `toml:"core_tags"`
+	ClampPercent   bool `toml:"clamp_percentages"`
 
 	Log telegraf.Logger `toml:"-"`
 }
 
-func usagePercent(delta, totalDelta float64) float64 {
+func usagePercent(delta, totalDelta float64, clamp bool) float64 {
 	// Handle invalid input defensively to avoid returning NaN/Inf
 	if totalDelta <= 0 || math.IsNaN(totalDelta) || math.IsInf(totalDelta, 0) {
 		return 0
@@ -43,14 +44,16 @@ func usagePercent(delta, totalDelta float64) float64 {
 		return 0
 	}
 
-	// CPU times should be monotonically increasing. In the presence of CPU hotplug,
-	// suspend/resume, counter resets/wrap, or odd guest-accounting, deltas can become
-	// negative or exceed totalDelta. Clamp to a sane range so we never emit out-of-
-	// range percentages.
-	if delta < 0 {
-		delta = 0
-	} else if delta > totalDelta {
-		delta = totalDelta
+	if clamp {
+		// CPU times should be monotonically increasing. In the presence of CPU hotplug,
+		// suspend/resume, counter resets/wrap, or odd guest-accounting, deltas can become
+		// negative or exceed totalDelta. Clamp to a sane range so we never emit out-of-
+		// range percentages.
+		if delta < 0 {
+			delta = 0
+		} else if delta > totalDelta {
+			delta = totalDelta
+		}
 	}
 
 	return 100 * delta / totalDelta
@@ -144,19 +147,19 @@ func (c *CPU) Gather(acc telegraf.Accumulator) error {
 		}
 
 		fieldsG := map[string]interface{}{
-			"usage_user":       usagePercent((cts.User-lastCts.User)-(cts.Guest-lastCts.Guest), totalDelta),
-			"usage_system":     usagePercent(cts.System-lastCts.System, totalDelta),
-			"usage_idle":       usagePercent(cts.Idle-lastCts.Idle, totalDelta),
-			"usage_nice":       usagePercent((cts.Nice-lastCts.Nice)-(cts.GuestNice-lastCts.GuestNice), totalDelta),
-			"usage_iowait":     usagePercent(cts.Iowait-lastCts.Iowait, totalDelta),
-			"usage_irq":        usagePercent(cts.Irq-lastCts.Irq, totalDelta),
-			"usage_softirq":    usagePercent(cts.Softirq-lastCts.Softirq, totalDelta),
-			"usage_steal":      usagePercent(cts.Steal-lastCts.Steal, totalDelta),
-			"usage_guest":      usagePercent(cts.Guest-lastCts.Guest, totalDelta),
-			"usage_guest_nice": usagePercent(cts.GuestNice-lastCts.GuestNice, totalDelta),
+			"usage_user":       usagePercent((cts.User-lastCts.User)-(cts.Guest-lastCts.Guest), totalDelta, c.ClampPercent),
+			"usage_system":     usagePercent(cts.System-lastCts.System, totalDelta, c.ClampPercent),
+			"usage_idle":       usagePercent(cts.Idle-lastCts.Idle, totalDelta, c.ClampPercent),
+			"usage_nice":       usagePercent((cts.Nice-lastCts.Nice)-(cts.GuestNice-lastCts.GuestNice), totalDelta, c.ClampPercent),
+			"usage_iowait":     usagePercent(cts.Iowait-lastCts.Iowait, totalDelta, c.ClampPercent),
+			"usage_irq":        usagePercent(cts.Irq-lastCts.Irq, totalDelta, c.ClampPercent),
+			"usage_softirq":    usagePercent(cts.Softirq-lastCts.Softirq, totalDelta, c.ClampPercent),
+			"usage_steal":      usagePercent(cts.Steal-lastCts.Steal, totalDelta, c.ClampPercent),
+			"usage_guest":      usagePercent(cts.Guest-lastCts.Guest, totalDelta, c.ClampPercent),
+			"usage_guest_nice": usagePercent(cts.GuestNice-lastCts.GuestNice, totalDelta, c.ClampPercent),
 		}
 		if c.ReportActive {
-			fieldsG["usage_active"] = usagePercent(active-lastActive, totalDelta)
+			fieldsG["usage_active"] = usagePercent(active-lastActive, totalDelta, c.ClampPercent)
 		}
 		acc.AddGauge("cpu", fieldsG, tags, now)
 	}
