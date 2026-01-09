@@ -334,3 +334,92 @@ func TestCPUUserGuestAdjustmentDoesNotGoNegative(t *testing.T) {
 	require.GreaterOrEqual(t, usageUser, 0.0)
 	require.LessOrEqual(t, usageUser, 100.0)
 }
+
+func TestCPUInvalidPercentBehaviorSkip(t *testing.T) {
+	// When configured, invalid percentage calculations should not error and should
+	// skip usage emission.
+	var acc testutil.Accumulator
+
+	cts := cpu.TimesStat{
+		CPU:  "cpu0",
+		User: 10,
+		Idle: 100,
+	}
+	cts2 := cpu.TimesStat{
+		CPU:  "cpu0",
+		User: 120,
+		Idle: 90, // negative idle delta can yield >100% user if not clamped/validated
+	}
+
+	var mps1 psutil.MockPS
+	mps1.On("CPUTimes").Return([]cpu.TimesStat{cts}, nil)
+	cs := newCPUStats(&mps1)
+	cs.PercentInvalidBehavior = "skip"
+
+	require.NoError(t, cs.Gather(&acc))
+
+	var mps2 psutil.MockPS
+	mps2.On("CPUTimes").Return([]cpu.TimesStat{cts2}, nil)
+	cs.ps = &mps2
+
+	require.NoError(t, cs.Gather(&acc))
+
+	// There should be no usage_user field emitted for the invalid interval.
+	found := false
+	for _, pt := range acc.Metrics {
+		if pt.Measurement != "cpu" {
+			continue
+		}
+		if _, ok := pt.Fields["usage_user"]; ok {
+			found = true
+			break
+		}
+	}
+	require.False(t, found, "expected no usage_* fields emitted when skipping invalid percent calculations")
+}
+
+func TestCPUInvalidPercentBehaviorLast(t *testing.T) {
+	// When configured, invalid percentage calculations should emit the last
+	// known-good usage snapshot.
+	var acc testutil.Accumulator
+
+	cts := cpu.TimesStat{
+		CPU:  "cpu0",
+		User: 10,
+		Idle: 100,
+	}
+	cts2 := cpu.TimesStat{
+		CPU:  "cpu0",
+		User: 20,  // +10
+		Idle: 190, // +90 -> totalDelta 100 => usage_user 10, usage_idle 90
+	}
+	cts3 := cpu.TimesStat{
+		CPU:  "cpu0",
+		User: 140, // +120
+		Idle: 180, // -10 -> invalid interval
+	}
+
+	var mps1 psutil.MockPS
+	mps1.On("CPUTimes").Return([]cpu.TimesStat{cts}, nil)
+	cs := newCPUStats(&mps1)
+	cs.PercentInvalidBehavior = "last"
+
+	require.NoError(t, cs.Gather(&acc))
+
+	var mps2 psutil.MockPS
+	mps2.On("CPUTimes").Return([]cpu.TimesStat{cts2}, nil)
+	cs.ps = &mps2
+	require.NoError(t, cs.Gather(&acc))
+
+	// Capture last-good value
+	lastGood := getFirstCPUFieldFloat(t, &acc, "usage_user")
+
+	var mps3 psutil.MockPS
+	mps3.On("CPUTimes").Return([]cpu.TimesStat{cts3}, nil)
+	cs.ps = &mps3
+	require.NoError(t, cs.Gather(&acc))
+
+	// The emitted value should remain the last-good one.
+	v := getFirstCPUFieldFloat(t, &acc, "usage_user")
+	require.InDelta(t, lastGood, v, 0.0005)
+}
