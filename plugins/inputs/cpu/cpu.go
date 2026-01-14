@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -37,10 +36,7 @@ type CPU struct {
 
 func usagePercent(delta, totalDelta float64, clamp bool) float64 {
 	// Handle invalid input defensively to avoid returning NaN/Inf
-	if totalDelta <= 0 || math.IsNaN(totalDelta) || math.IsInf(totalDelta, 0) {
-		return 0
-	}
-	if math.IsNaN(delta) || math.IsInf(delta, 0) {
+	if totalDelta <= 0 {
 		return 0
 	}
 
