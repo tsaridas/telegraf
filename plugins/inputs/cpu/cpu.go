@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -22,7 +21,6 @@ var sampleConfig string
 type CPU struct {
 	ps         psutil.PS
 	lastStats  map[string]cpu.TimesStat
-	lastUsage  map[string]map[string]float64
 	cpuInfo    map[string]cpu.InfoStat
 	coreID     bool
 	physicalID bool
@@ -33,30 +31,8 @@ type CPU struct {
 	ReportActive   bool `toml:"report_active"`
 	CoreTags       bool `toml:"core_tags"`
 	ClampPercent   bool `toml:"clamp_percentages"`
-	// PercentInvalidBehavior controls how to handle invalid percentage calculations.
-	// Valid options:
-	// - "error" (default): return an error (current behavior)
-	// - "skip": skip emitting usage_* fields for the interval
-	// - "last": emit the last known-good usage_* values for that CPU
-	PercentInvalidBehavior string `toml:"percent_invalid_behavior"`
 
 	Log telegraf.Logger `toml:"-"`
-}
-
-func (c *CPU) percentInvalidBehavior() string {
-	behavior := strings.ToLower(strings.TrimSpace(c.PercentInvalidBehavior))
-	if behavior == "" {
-		return "error"
-	}
-	switch behavior {
-	case "error", "skip", "last":
-		return behavior
-	default:
-		if c.Log != nil {
-			c.Log.Warnf("Invalid percent_invalid_behavior %q, using %q", c.PercentInvalidBehavior, "error")
-		}
-		return "error"
-	}
 }
 
 func usagePercent(delta, totalDelta float64, clamp bool) float64 {
@@ -81,39 +57,6 @@ func usagePercent(delta, totalDelta float64, clamp bool) float64 {
 	}
 
 	return 100 * delta / totalDelta
-}
-
-const usageEpsilon = 1e-9
-
-func normalizeUsagePercent(v float64) (float64, bool) {
-	// returns (normalizedValue, valid)
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0, false
-	}
-
-	// Clamp tiny rounding errors to the range.
-	if v < 0 {
-		if v > -usageEpsilon {
-			return 0, true
-		}
-		return 0, false
-	}
-	if v > 100 {
-		if v < 100+usageEpsilon {
-			return 100, true
-		}
-		return 0, false
-	}
-
-	return v, true
-}
-
-func snapshotToFields(snapshot map[string]float64) map[string]interface{} {
-	fields := make(map[string]interface{}, len(snapshot))
-	for k, v := range snapshot {
-		fields[k] = v
-	}
-	return fields
 }
 
 func (*CPU) SampleConfig() string {
@@ -145,10 +88,6 @@ func (c *CPU) Gather(acc telegraf.Accumulator) error {
 		return fmt.Errorf("error getting CPU info: %w", err)
 	}
 	now := time.Now()
-	behavior := c.percentInvalidBehavior()
-	if c.lastUsage == nil {
-		c.lastUsage = make(map[string]map[string]float64)
-	}
 
 	for _, cts := range times {
 		tags := map[string]string{
@@ -199,88 +138,46 @@ func (c *CPU) Gather(acc telegraf.Accumulator) error {
 		totalDelta := total - lastTotal
 
 		if totalDelta < 0 {
-			if behavior == "error" {
-				err = errors.New("current total CPU time is less than previous total CPU time")
-				break
-			}
-			if behavior == "last" {
-				if snapshot, ok := c.lastUsage[cts.CPU]; ok && len(snapshot) > 0 {
-					acc.AddGauge("cpu", snapshotToFields(snapshot), tags, now)
-				}
-			}
-			continue
+			err = errors.New("current total CPU time is less than previous total CPU time")
+			break
 		}
 
 		if totalDelta == 0 {
 			continue
 		}
 
-		snapshot := make(map[string]float64, 11)
+		fieldsG := map[string]interface{}{}
 
 		if c.ClampPercent {
-			snapshot["usage_user"] = usagePercent((cts.User-lastCts.User)-(cts.Guest-lastCts.Guest), totalDelta, true)
-			snapshot["usage_system"] = usagePercent(cts.System-lastCts.System, totalDelta, true)
-			snapshot["usage_idle"] = usagePercent(cts.Idle-lastCts.Idle, totalDelta, true)
-			snapshot["usage_nice"] = usagePercent((cts.Nice-lastCts.Nice)-(cts.GuestNice-lastCts.GuestNice), totalDelta, true)
-			snapshot["usage_iowait"] = usagePercent(cts.Iowait-lastCts.Iowait, totalDelta, true)
-			snapshot["usage_irq"] = usagePercent(cts.Irq-lastCts.Irq, totalDelta, true)
-			snapshot["usage_softirq"] = usagePercent(cts.Softirq-lastCts.Softirq, totalDelta, true)
-			snapshot["usage_steal"] = usagePercent(cts.Steal-lastCts.Steal, totalDelta, true)
-			snapshot["usage_guest"] = usagePercent(cts.Guest-lastCts.Guest, totalDelta, true)
-			snapshot["usage_guest_nice"] = usagePercent(cts.GuestNice-lastCts.GuestNice, totalDelta, true)
+			fieldsG["usage_user"] = usagePercent((cts.User-lastCts.User)-(cts.Guest-lastCts.Guest), totalDelta, true)
+			fieldsG["usage_system"] = usagePercent(cts.System-lastCts.System, totalDelta, true)
+			fieldsG["usage_idle"] = usagePercent(cts.Idle-lastCts.Idle, totalDelta, true)
+			fieldsG["usage_nice"] = usagePercent((cts.Nice-lastCts.Nice)-(cts.GuestNice-lastCts.GuestNice), totalDelta, true)
+			fieldsG["usage_iowait"] = usagePercent(cts.Iowait-lastCts.Iowait, totalDelta, true)
+			fieldsG["usage_irq"] = usagePercent(cts.Irq-lastCts.Irq, totalDelta, true)
+			fieldsG["usage_softirq"] = usagePercent(cts.Softirq-lastCts.Softirq, totalDelta, true)
+			fieldsG["usage_steal"] = usagePercent(cts.Steal-lastCts.Steal, totalDelta, true)
+			fieldsG["usage_guest"] = usagePercent(cts.Guest-lastCts.Guest, totalDelta, true)
+			fieldsG["usage_guest_nice"] = usagePercent(cts.GuestNice-lastCts.GuestNice, totalDelta, true)
 			if c.ReportActive {
-				snapshot["usage_active"] = usagePercent(active-lastActive, totalDelta, true)
+				fieldsG["usage_active"] = usagePercent(active-lastActive, totalDelta, true)
 			}
 		} else {
-			// Raw calculation (backwards-compatible). If configured to handle invalid
-			// values, normalize tiny rounding errors and validate bounds.
-			raw := map[string]float64{
-				"usage_user":       100 * ((cts.User - lastCts.User) - (cts.Guest - lastCts.Guest)) / totalDelta,
-				"usage_system":     100 * (cts.System - lastCts.System) / totalDelta,
-				"usage_idle":       100 * (cts.Idle - lastCts.Idle) / totalDelta,
-				"usage_nice":       100 * ((cts.Nice - lastCts.Nice) - (cts.GuestNice - lastCts.GuestNice)) / totalDelta,
-				"usage_iowait":     100 * (cts.Iowait - lastCts.Iowait) / totalDelta,
-				"usage_irq":        100 * (cts.Irq - lastCts.Irq) / totalDelta,
-				"usage_softirq":    100 * (cts.Softirq - lastCts.Softirq) / totalDelta,
-				"usage_steal":      100 * (cts.Steal - lastCts.Steal) / totalDelta,
-				"usage_guest":      100 * (cts.Guest - lastCts.Guest) / totalDelta,
-				"usage_guest_nice": 100 * (cts.GuestNice - lastCts.GuestNice) / totalDelta,
-			}
+			fieldsG["usage_user"] = 100 * ((cts.User - lastCts.User) - (cts.Guest - lastCts.Guest)) / totalDelta
+			fieldsG["usage_system"] = 100 * (cts.System - lastCts.System) / totalDelta
+			fieldsG["usage_idle"] = 100 * (cts.Idle - lastCts.Idle) / totalDelta
+			fieldsG["usage_nice"] = 100 * ((cts.Nice - lastCts.Nice) - (cts.GuestNice - lastCts.GuestNice)) / totalDelta
+			fieldsG["usage_iowait"] = 100 * (cts.Iowait - lastCts.Iowait) / totalDelta
+			fieldsG["usage_irq"] = 100 * (cts.Irq - lastCts.Irq) / totalDelta
+			fieldsG["usage_softirq"] = 100 * (cts.Softirq - lastCts.Softirq) / totalDelta
+			fieldsG["usage_steal"] = 100 * (cts.Steal - lastCts.Steal) / totalDelta
+			fieldsG["usage_guest"] = 100 * (cts.Guest - lastCts.Guest) / totalDelta
+			fieldsG["usage_guest_nice"] = 100 * (cts.GuestNice - lastCts.GuestNice) / totalDelta
 			if c.ReportActive {
-				raw["usage_active"] = 100 * (active - lastActive) / totalDelta
-			}
-
-			invalid := false
-			for k, v := range raw {
-				if behavior == "error" {
-					snapshot[k] = v
-					continue
-				}
-				nv, ok := normalizeUsagePercent(v)
-				if !ok {
-					invalid = true
-					break
-				}
-				snapshot[k] = nv
-			}
-
-			if invalid {
-				switch behavior {
-				case "skip":
-					continue
-				case "last":
-					if last, ok := c.lastUsage[cts.CPU]; ok && len(last) > 0 {
-						acc.AddGauge("cpu", snapshotToFields(last), tags, now)
-					}
-					continue
-				default:
-					// "error" handled above
-				}
+				fieldsG["usage_active"] = 100 * (active - lastActive) / totalDelta
 			}
 		}
-
-		acc.AddGauge("cpu", snapshotToFields(snapshot), tags, now)
-		c.lastUsage[cts.CPU] = snapshot
+		acc.AddGauge("cpu", fieldsG, tags, now)
 	}
 
 	c.lastStats = make(map[string]cpu.TimesStat)

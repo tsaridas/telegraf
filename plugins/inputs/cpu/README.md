@@ -27,9 +27,6 @@ plugin ordering. See [CONFIGURATION.md][CONFIGURATION.md] for more details.
   collect_cpu_time = false
   ## If true, clamp usage percent fields into the range [0,100]
   clamp_percentages = false
-  ## How to handle invalid percent calculations (counter resets, etc).
-  ## Valid values: "error" (default), "skip", "last"
-  percent_invalid_behavior = "error"
   ## If true, compute and report the sum of all non-idle CPU states
   ## NOTE: The resulting 'time_active' field INCLUDES 'iowait'!
   report_active = false
